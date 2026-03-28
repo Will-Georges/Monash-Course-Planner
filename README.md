@@ -18,7 +18,6 @@ Try the program [HERE](https://joelk06.github.io/Monash-Course-Planner/)</p>
 - Units swap when placed on eachother
 - Credit point based unit width
 - Course cost calculator
-- Checks for prerequisite and prohibition breaches
 
 Thank you for using my program</p>
 **Created by Joel Knight**

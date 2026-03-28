@@ -3,9 +3,6 @@ export default function SetupModal({
   setStartYear, 
   degreeLength, 
   setDegreeLength, 
-  selectedCourseCode,
-  setSelectedCourseCode,
-  creatingPlan,
   onComplete 
 }) {
   return (
@@ -37,27 +34,11 @@ export default function SetupModal({
               className="w-full px-4 py-3 border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Course Code (optional)
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. C2001"
-              value={selectedCourseCode}
-              onChange={(e) => setSelectedCourseCode(e.target.value.toUpperCase())}
-              className="w-full px-4 py-3 border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent uppercase"
-            />
-            <p className="text-xs text-gray-500 mt-2">
-              If provided, units will be preloaded from the handbook structure for this course.
-            </p>
-          </div>
           <button
             onClick={onComplete}
-            disabled={creatingPlan}
             className="w-full bg-blue-600 text-white py-4 font-semibold hover:bg-blue-700 transition"
           >
-            {creatingPlan ? 'Creating Plan...' : 'Create Plan'}
+            Create Plan
           </button>
         </div>
       </div>
