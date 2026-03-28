@@ -1,6 +1,6 @@
 # **Monash Course Planner**
-This project was born due to the official Mon Planner being outdated and not including new units. It was first developed as an excel spreadsheet using lookup tables then later developed into this git hub page where it is free for anyone to use.</p>
-The hope is that it may help make someone's course planning just a little easier. Note that as this was a quick project it does not consider credit points, prohibitions, prerequisites, and other such details.</p>
+This project was born due to the official Mon Planner being outdated, not including new units and shutting down on 5 May. It was first developed as an excel spreadsheet using lookup tables then later developed into this git hub page where it is free for anyone to use.</p>
+The hope is that it may help make someone's course planning just a little easier. Note that some details such as credit points, and other such details are not considered.</p>
 Although it was originally created in a single html file it has since been migrated to vite. </p>
 Try the program [HERE](https://joelk06.github.io/Monash-Course-Planner/)</p>
 ## **Features**
@@ -21,3 +21,7 @@ Try the program [HERE](https://joelk06.github.io/Monash-Course-Planner/)</p>
 
 Thank you for using my program</p>
 **Created by Joel Knight**
+
+Thank you to the following contributors:
+- [Will Georges](https://github.com/will-georges)
+- [Sean Lua](https://github.com/sjlua)
