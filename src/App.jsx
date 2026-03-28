@@ -11,6 +11,8 @@ import SemesterGrid from './components/Grid/SemesterGrid';
 import { REQUISITES_CACHE_VERSION, STORAGE_KEYS } from './utils/constants';
 import { calculateCourseCost } from './utils/costCalculator';
 import { evaluateRequisite, parseHandbookRequisites } from './utils/requisites';
+import { parseCourseMapUnits } from './utils/courseMapParser';
+import { isUnitOffered } from './utils/validation';
 
 function App() {
   const { unitsData, loading, error } = useUnitsData();
@@ -28,6 +30,8 @@ function App() {
   const [selectedUnit, setSelectedUnit] = useState(null);
   const [draggedUnit, setDraggedUnit] = useState(null);
   const [courseCost, setCourseCost] = useState(0);
+  const [selectedCourseCode, setSelectedCourseCode] = useState('');
+  const [creatingPlan, setCreatingPlan] = useState(false);
   const [requisitesByCode, setRequisitesByCode] = useState({});
   const [requisitesCacheReady, setRequisitesCacheReady] = useState(false);
   const requisitesFetchInFlight = useRef(new Set());
@@ -56,12 +60,12 @@ function App() {
     if (semesters.length > 0 && currentPlanId && plans.length > 0) {
       const updatedPlans = plans.map(p => 
         p.id === currentPlanId 
-          ? { ...p, semesters, startYear, degreeLength }
+          ? { ...p, semesters, startYear, degreeLength, courseCode: selectedCourseCode.trim().toUpperCase() }
           : p
       );
       savePlans(updatedPlans, currentPlanId);
     }
-  }, [semesters]);
+  }, [semesters, selectedCourseCode]);
 
   // Load saved plans when units data is ready
   useEffect(() => {
@@ -312,6 +316,7 @@ function App() {
     }));
     setStartYear(plan.startYear);
     setDegreeLength(plan.degreeLength);
+    setSelectedCourseCode(plan.courseCode || '');
     setSemesters(validSemesters);
   };
 
@@ -321,12 +326,108 @@ function App() {
     localStorage.setItem(STORAGE_KEYS.LAST_PLAN_ID, planId);
   };
 
+  const getCourseHandbookUrl = (courseCode) => {
+    const path = `/2026/courses/${courseCode.toUpperCase()}`;
+    return import.meta.env.DEV ? `/handbook-proxy${path}` : `https://handbook.monash.edu${path}`;
+  };
+
+  const placeUnitInSemesters = (semesterList, unit) => {
+    if (!unit) return false;
+
+    const slotsNeeded = Math.max(1, Math.round((unit.credit_points || 6) / 6));
+    const unitLevel = parseInt((unit.code || '').replace(/^[A-Z]{3,4}/, '').charAt(0), 10) || 1;
+
+    const semesterOrder = semesterList
+      .map((semester, index) => ({ semester, index }))
+      .sort((a, b) => {
+        const aYear = parseInt(a.semester.label.split(', ')[1], 10);
+        const bYear = parseInt(b.semester.label.split(', ')[1], 10);
+        if (aYear !== bYear) return aYear - bYear;
+        return a.semester.semesterType === 'Semester 1' ? -1 : 1;
+      });
+
+    const preferredStart = Math.max(0, (unitLevel - 1) * 2 - 1);
+
+    const tryPlace = (candidate) => {
+      const semester = candidate.semester;
+      const semesterIndex = candidate.index;
+
+      if (semester.isAcademicLeave || semester.units.includes('ACADEMIC_LEAVE')) {
+        return false;
+      }
+
+      if (!isUnitOffered(unit, semester.semesterType, semester.label)) {
+        return false;
+      }
+
+      const units = semesterList[semesterIndex].units;
+      for (let start = 0; start <= units.length - slotsNeeded; start += 1) {
+        const canPlace = Array.from({ length: slotsNeeded }).every((_, offset) => !units[start + offset]);
+        if (!canPlace) continue;
+
+        const placedUnit = { ...unit, _instanceId: Date.now() + Math.random() };
+        units[start] = placedUnit;
+        for (let i = 1; i < slotsNeeded; i += 1) {
+          units[start + i] = null;
+        }
+        return true;
+      }
+
+      return false;
+    };
+
+    for (const candidate of semesterOrder.slice(preferredStart)) {
+      if (tryPlace(candidate)) return true;
+    }
+
+    for (const candidate of semesterOrder.slice(0, preferredStart)) {
+      if (tryPlace(candidate)) return true;
+    }
+
+    return false;
+  };
+
+  const preloadCourseUnits = async (semesterTemplate, courseCode) => {
+    if (!courseCode || !courseCode.trim()) {
+      return semesterTemplate;
+    }
+
+    const response = await fetch(getCourseHandbookUrl(courseCode.trim()));
+    if (!response.ok) {
+      throw new Error(`Unable to load course ${courseCode.toUpperCase()} from handbook.`);
+    }
+
+    const html = await response.text();
+    const preloadUnitCodes = parseCourseMapUnits(html);
+
+    if (preloadUnitCodes.length === 0) {
+      return semesterTemplate;
+    }
+
+    const preloadedSemesters = semesterTemplate.map((semester) => ({
+      ...semester,
+      units: [...semester.units]
+    }));
+
+    const preloadUnits = preloadUnitCodes
+      .map((code) => unitsData.find((unit) => unit.code?.toUpperCase() === code.toUpperCase()))
+      .filter(Boolean);
+
+    preloadUnits.forEach((unit) => {
+      placeUnitInSemesters(preloadedSemesters, unit);
+    });
+
+    return preloadedSemesters;
+  };
+
   const handleStartNew = () => {
+    setSelectedCourseCode('');
     setShowLanding(false);
     setShowSetup(true);
   };
 
-  const handleSetupComplete = () => {
+  const handleSetupComplete = async () => {
+    setCreatingPlan(true);
     const newSemesters = [];
     for (let year = 0; year < degreeLength; year++) {
       newSemesters.push({
@@ -342,20 +443,44 @@ function App() {
         units: [null, null, null, null]
       });
     }
-    
-    const newPlan = {
-      id: 'plan-' + Date.now(),
-      name: `Plan ${plans.length + 1}`,
-      startYear,
-      degreeLength,
-      semesters: newSemesters
-    };
-    
-    const updatedPlans = [...plans, newPlan];
-    savePlans(updatedPlans, newPlan.id);
-    setCurrentPlanId(newPlan.id);
-    setSemesters(newSemesters);
-    setShowSetup(false);
+
+    try {
+      const preloadedSemesters = await preloadCourseUnits(newSemesters, selectedCourseCode);
+
+      const newPlan = {
+        id: 'plan-' + Date.now(),
+        name: `Plan ${plans.length + 1}`,
+        startYear,
+        degreeLength,
+        courseCode: selectedCourseCode.trim().toUpperCase(),
+        semesters: preloadedSemesters
+      };
+      
+      const updatedPlans = [...plans, newPlan];
+      savePlans(updatedPlans, newPlan.id);
+      setCurrentPlanId(newPlan.id);
+      setSemesters(preloadedSemesters);
+      setShowSetup(false);
+    } catch (setupError) {
+      console.error('Error creating course map preload:', setupError);
+      alert(`${setupError.message}\n\nA blank plan will be created instead.`);
+
+      const newPlan = {
+        id: 'plan-' + Date.now(),
+        name: `Plan ${plans.length + 1}`,
+        startYear,
+        degreeLength,
+        courseCode: selectedCourseCode.trim().toUpperCase(),
+        semesters: newSemesters
+      };
+      const updatedPlans = [...plans, newPlan];
+      savePlans(updatedPlans, newPlan.id);
+      setCurrentPlanId(newPlan.id);
+      setSemesters(newSemesters);
+      setShowSetup(false);
+    } finally {
+      setCreatingPlan(false);
+    }
   };
 
   const renamePlan = (planId, newName) => {
@@ -391,6 +516,7 @@ function App() {
       name: `Plan ${plans.length + 1}`,
       startYear: newStartYear,
       degreeLength: newDegreeLength,
+      courseCode: '',
       semesters: []
     };
     
@@ -480,6 +606,7 @@ function App() {
       startYear, 
       degreeLength, 
       semesters,
+      courseCode: selectedCourseCode,
       name: currentPlan?.name || 'Course Plan'
     }, null, 2);
     const dataBlob = new Blob([dataStr], { type: 'application/json' });
@@ -509,6 +636,7 @@ function App() {
             name: planName,
             startYear: data.startYear || 2025,
             degreeLength: data.degreeLength || 4,
+            courseCode: data.courseCode || '',
             semesters: data.semesters || []
           };
           
@@ -585,6 +713,9 @@ function App() {
         setStartYear={setStartYear}
         degreeLength={degreeLength}
         setDegreeLength={setDegreeLength}
+        selectedCourseCode={selectedCourseCode}
+        setSelectedCourseCode={setSelectedCourseCode}
+        creatingPlan={creatingPlan}
         onComplete={handleSetupComplete}
       />
     );
