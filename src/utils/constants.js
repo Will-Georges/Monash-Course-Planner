@@ -1,6 +1,7 @@
 export const UNITS_CSV_URL = 'https://raw.githubusercontent.com/JoelK06/Monash-units/refs/heads/main/data/monash_units_complete.csv';
 
 export const DATA_VERSION = '3';
+export const REQUISITES_CACHE_VERSION = '1';
 
 export const FACULTY_COLORS = {
   "Business & Economics": "#00bcd4",
@@ -29,6 +30,8 @@ export const STORAGE_KEYS = {
   UNITS_DATA: 'monashUnitsData',
   CACHE_TIME: 'monashUnitsCacheTime',
   DATA_VERSION: 'monashUnitsDataVersion',
+  REQUISITES_CACHE: 'monashUnitRequisitesCache',
+  REQUISITES_CACHE_VERSION: 'monashUnitRequisitesCacheVersion',
   PLANS: 'monashCoursePlans',
   LAST_PLAN_ID: 'monashLastPlanId',
   DARK_MODE: 'monashDarkMode'

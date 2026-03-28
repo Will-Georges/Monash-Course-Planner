@@ -5,6 +5,15 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/Monash-Course-Planner/', // Update this to match your GitHub repo name
+  server: {
+    proxy: {
+      '/handbook-proxy': {
+        target: 'https://handbook.monash.edu',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/handbook-proxy/, '')
+      }
+    }
+  },
   build: {
     outDir: 'dist',
   },

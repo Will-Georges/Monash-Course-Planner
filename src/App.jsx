@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useUnitsData } from './hooks/useUnitsData';
 import { useDarkMode } from './hooks/useDarkMode';
 import { Loader } from './components/Icons/Icons';
@@ -8,8 +8,9 @@ import InfoModal from './components/Modals/InfoModal';
 import Sidebar from './components/Sidebar/Sidebar';
 import Header from './components/Header/Header';
 import SemesterGrid from './components/Grid/SemesterGrid';
-import { STORAGE_KEYS } from './utils/constants';
+import { REQUISITES_CACHE_VERSION, STORAGE_KEYS } from './utils/constants';
 import { calculateCourseCost } from './utils/costCalculator';
+import { evaluateRequisite, parseHandbookRequisites } from './utils/requisites';
 
 function App() {
   const { unitsData, loading, error } = useUnitsData();
@@ -27,6 +28,28 @@ function App() {
   const [selectedUnit, setSelectedUnit] = useState(null);
   const [draggedUnit, setDraggedUnit] = useState(null);
   const [courseCost, setCourseCost] = useState(0);
+  const [requisitesByCode, setRequisitesByCode] = useState({});
+  const [requisitesCacheReady, setRequisitesCacheReady] = useState(false);
+  const requisitesFetchInFlight = useRef(new Set());
+
+  const fetchUnitRequisites = async (unitCode) => {
+    const unitPath = `/2026/units/${unitCode.toLowerCase()}`;
+    const handbookUrl = import.meta.env.DEV
+      ? `/handbook-proxy${unitPath}`
+      : `https://handbook.monash.edu${unitPath}`;
+
+    const response = await fetch(handbookUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to load requisites for ${unitCode} (${response.status})`);
+    }
+    const html = await response.text();
+    return parseHandbookRequisites(html);
+  };
+
+  const saveRequisitesCache = (cache) => {
+    localStorage.setItem(STORAGE_KEYS.REQUISITES_CACHE, JSON.stringify(cache));
+    localStorage.setItem(STORAGE_KEYS.REQUISITES_CACHE_VERSION, REQUISITES_CACHE_VERSION);
+  };
 
   // Save to localStorage whenever semesters change
   useEffect(() => {
@@ -86,6 +109,201 @@ function App() {
     const cost = calculateCourseCost(semesters);
     setCourseCost(cost);
   }, [semesters]);
+
+  useEffect(() => {
+    const cacheVersion = localStorage.getItem(STORAGE_KEYS.REQUISITES_CACHE_VERSION);
+    const cachedRequisites = localStorage.getItem(STORAGE_KEYS.REQUISITES_CACHE);
+
+    if (cacheVersion !== REQUISITES_CACHE_VERSION) {
+      localStorage.removeItem(STORAGE_KEYS.REQUISITES_CACHE);
+      localStorage.setItem(STORAGE_KEYS.REQUISITES_CACHE_VERSION, REQUISITES_CACHE_VERSION);
+      setRequisitesByCode({});
+      setRequisitesCacheReady(true);
+      return;
+    }
+
+    if (cachedRequisites) {
+      try {
+        setRequisitesByCode(JSON.parse(cachedRequisites));
+      } catch (cacheError) {
+        console.error('Error parsing requisites cache:', cacheError);
+        localStorage.removeItem(STORAGE_KEYS.REQUISITES_CACHE);
+      }
+    }
+
+    setRequisitesCacheReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!requisitesCacheReady) {
+      return;
+    }
+
+    const unitCodes = new Set();
+    semesters.forEach((semester) => {
+      semester.units.forEach((unit) => {
+        if (unit && unit !== 'ACADEMIC_LEAVE' && unit.code) {
+          unitCodes.add(unit.code.toUpperCase());
+        }
+      });
+    });
+
+    unitCodes.forEach((unitCode) => {
+      const cached = requisitesByCode[unitCode];
+      if (cached?.status === 'loaded' || cached?.status === 'error' || requisitesFetchInFlight.current.has(unitCode)) {
+        return;
+      }
+
+      requisitesFetchInFlight.current.add(unitCode);
+      setRequisitesByCode((prev) => ({
+        ...prev,
+        [unitCode]: { status: 'loading', rules: [], loadedAt: Date.now() }
+      }));
+
+      fetchUnitRequisites(unitCode)
+        .then((rules) => {
+          setRequisitesByCode((prev) => {
+            const updated = {
+              ...prev,
+              [unitCode]: {
+                status: 'loaded',
+                rules,
+                loadedAt: Date.now()
+              }
+            };
+            saveRequisitesCache(updated);
+            return updated;
+          });
+        })
+        .catch((fetchError) => {
+          console.error(`Error loading requisites for ${unitCode}:`, fetchError);
+          setRequisitesByCode((prev) => {
+            const updated = {
+              ...prev,
+              [unitCode]: {
+                status: 'error',
+                rules: [],
+                error: fetchError.message,
+                loadedAt: Date.now()
+              }
+            };
+            saveRequisitesCache(updated);
+            return updated;
+          });
+        })
+        .finally(() => {
+          requisitesFetchInFlight.current.delete(unitCode);
+        });
+    });
+  }, [semesters, requisitesByCode, requisitesCacheReady]);
+
+  const unitValidationMap = useMemo(() => {
+    const validation = {};
+    const allPlacedCodes = new Set();
+
+    semesters.forEach((semester) => {
+      semester.units.forEach((unit) => {
+        if (unit && unit !== 'ACADEMIC_LEAVE' && unit.code) {
+          allPlacedCodes.add(unit.code.toUpperCase());
+        }
+      });
+    });
+
+    const completedCodes = new Set();
+    semesters.forEach((semester) => {
+      const semesterCodes = new Set();
+      const seenInstanceIds = new Set();
+
+      semester.units.forEach((unit) => {
+        if (!unit || unit === 'ACADEMIC_LEAVE' || !unit._instanceId || seenInstanceIds.has(unit._instanceId)) {
+          return;
+        }
+
+        seenInstanceIds.add(unit._instanceId);
+        const unitCode = unit.code?.toUpperCase();
+        if (!unitCode) {
+          return;
+        }
+
+        semesterCodes.add(unitCode);
+        const unitRequisites = requisitesByCode[unitCode];
+        if (!unitRequisites || unitRequisites.status !== 'loaded') {
+          return;
+        }
+
+        const issues = [];
+        unitRequisites.rules.forEach((rule) => {
+          if (rule.type.includes('prereq')) {
+            const prerequisiteMet = evaluateRequisite(rule, completedCodes);
+            if (!prerequisiteMet) {
+              const unitList = (rule.unitCodes || []).slice(0, 8).join(', ');
+              issues.push(
+                unitList
+                  ? `Prerequisite not met. Requires: ${unitList}`
+                  : 'Prerequisite not met.'
+              );
+            }
+          }
+
+          if (rule.type.includes('coreq')) {
+            const corequisiteMet = evaluateRequisite(rule, new Set([...completedCodes, ...semesterCodes]));
+            if (!corequisiteMet) {
+              const unitList = (rule.unitCodes || []).slice(0, 8).join(', ');
+              issues.push(
+                unitList
+                  ? `Corequisite not met. Requires with/after: ${unitList}`
+                  : 'Corequisite not met.'
+              );
+            }
+          }
+
+          if (rule.type.includes('prohibit')) {
+            const otherTakenCodes = new Set([...allPlacedCodes].filter((code) => code !== unitCode));
+            const prohibitionBreached = evaluateRequisite(rule, otherTakenCodes);
+            if (prohibitionBreached) {
+              const conflictingCodes = (rule.unitCodes || []).filter((code) => otherTakenCodes.has(code));
+              const conflictText = conflictingCodes.slice(0, 8).join(', ');
+              issues.push(
+                conflictText
+                  ? `Prohibition breached with: ${conflictText}`
+                  : 'Prohibition breached.'
+              );
+            }
+          }
+        });
+
+        if (issues.length > 0) {
+          validation[unit._instanceId] = issues;
+        }
+      });
+
+      semesterCodes.forEach((code) => completedCodes.add(code));
+    });
+
+    return validation;
+  }, [semesters, requisitesByCode]);
+
+  const mapIssues = useMemo(() => {
+    const issues = [];
+    semesters.forEach((semester) => {
+      const seenInstanceIds = new Set();
+      semester.units.forEach((unit) => {
+        if (!unit || unit === 'ACADEMIC_LEAVE' || !unit._instanceId || seenInstanceIds.has(unit._instanceId)) {
+          return;
+        }
+        seenInstanceIds.add(unit._instanceId);
+        const unitIssues = unitValidationMap[unit._instanceId];
+        if (unitIssues && unitIssues.length > 0) {
+          issues.push({
+            code: unit.code,
+            semester: semester.label,
+            messages: unitIssues
+          });
+        }
+      });
+    });
+    return issues;
+  }, [semesters, unitValidationMap]);
 
   const loadPlan = (plan) => {
     const validSemesters = plan.semesters.map(sem => ({
@@ -410,6 +628,8 @@ function App() {
           setDraggedUnit={setDraggedUnit}
           onUnitClick={setSelectedUnit}
           unitsData={unitsData}
+          unitValidationMap={unitValidationMap}
+          mapIssues={mapIssues}
         />
       </div>
 
