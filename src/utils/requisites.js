@@ -15,12 +15,12 @@ const getRelationshipCode = (relationship) => {
   return match ? match[0].toUpperCase() : null;
 };
 
-const getConnector = (item) => {
+const getConnector = (item, fallback = 'AND') => {
   const connector =
     item?.parent_connector?.value ||
     item?.connector?.value ||
     item?.connector ||
-    'AND';
+    fallback;
 
   return connector.toUpperCase() === 'OR' ? 'OR' : 'AND';
 };
@@ -48,11 +48,12 @@ const getRelationshipSort = (relationship) => {
 
 const evaluateContainer = (container, completedCodes) => {
   const items = [];
+  const groupConnector = getConnector(container, 'AND');
 
   (container?.containers || []).forEach((child) => {
     items.push({
       kind: 'container',
-      connector: getConnector(child),
+      connector: getConnector(child, groupConnector),
       sortValue: getContainerSort(child),
       value: evaluateContainer(child, completedCodes)
     });
@@ -66,7 +67,7 @@ const evaluateContainer = (container, completedCodes) => {
 
     items.push({
       kind: 'relationship',
-      connector: getConnector(relationship),
+      connector: getConnector(relationship, groupConnector),
       sortValue: getRelationshipSort(relationship),
       code,
       value: completedCodes.has(code)
